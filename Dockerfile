@@ -1,10 +1,12 @@
 FROM node:18-slim
 
-# Install system deps: curl + ffmpeg (yt-dlp likes having ffmpeg)
+# Install system deps: CA certs, curl, ffmpeg
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+       ca-certificates \
        curl \
        ffmpeg \
+  && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp from the official release binary
@@ -22,7 +24,6 @@ RUN npm install --omit=dev
 # Copy app code
 COPY . .
 
-# Railway will set PORT, fall back to 8080
 ENV PORT=8080
 EXPOSE 8080
 
