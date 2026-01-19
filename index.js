@@ -100,6 +100,27 @@ function stripVttToPlainText(vtt) {
   return out.join(' ');
 }
 
+function cleanYoutubeUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    let videoId = null;
+
+    if (host.includes('youtube.com')) {
+      videoId = u.searchParams.get('v');
+    } else if (host === 'youtu.be') {
+      videoId = u.pathname.slice(1);
+    }
+
+    if (videoId) {
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+  } catch {
+    // ignore
+  }
+  return url;
+}
+
 function isLikelyYoutubeUrl(url) {
   try {
     const u = new URL(url);
@@ -133,6 +154,10 @@ app.get('/api/transcript', async (req, res) => {
     });
   }
 
+  const cleanUrl = cleanYoutubeUrl(url);
+  console.log('[worker] Original URL:', url);
+  console.log('[worker] Cleaned URL:', cleanUrl);
+
   let dir = null;
 
   try {
@@ -148,7 +173,7 @@ app.get('/api/transcript', async (req, res) => {
 
     const outputPattern = path.join(dir, '%(id)s.%(ext)s');
     const cookieArg = cookieData ? `--cookies "${cookiePath}"` : '';
-    const cmd = `yt-dlp ${cookieArg} --js-runtimes node --skip-download --write-auto-subs --sub-lang en --sub-format vtt -o "${outputPattern}" "${url}"`;
+    const cmd = `yt-dlp ${cookieArg} --js-runtimes node --no-playlist --skip-download --write-auto-subs --sub-lang en --sub-format vtt -o "${outputPattern}" "${cleanUrl}"`;
 
     console.log('[worker] Running command:', cmd);
 
