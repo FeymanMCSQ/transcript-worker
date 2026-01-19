@@ -138,8 +138,17 @@ app.get('/api/transcript', async (req, res) => {
   try {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yt-dlp-'));
 
+    const cookiePath = path.join(dir, 'cookies.txt');
+    const cookieData = process.env.YT_COOKIES || '';
+
+    if (cookieData) {
+      await fs.writeFile(cookiePath, cookieData, 'utf8');
+      console.log('[worker] Cookies file created.');
+    }
+
     const outputPattern = path.join(dir, '%(id)s.%(ext)s');
-    const cmd = `yt-dlp --skip-download --write-auto-subs --sub-lang en --sub-format vtt -o "${outputPattern}" "${url}"`;
+    const cookieArg = cookieData ? `--cookies "${cookiePath}"` : '';
+    const cmd = `yt-dlp ${cookieArg} --js-runtimes node --skip-download --write-auto-subs --sub-lang en --sub-format vtt -o "${outputPattern}" "${url}"`;
 
     console.log('[worker] Running command:', cmd);
 
