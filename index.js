@@ -285,27 +285,27 @@ app.get('/api/transcript', async (req, res) => {
       '--impersonate',
       'chrome',
       '--js-runtimes',
-      'deno,node',
+      'deno',
       '--ignore-no-formats-error',
       '--no-playlist',
       '--skip-download',
       '--write-subs',
       '--write-auto-subs',
       '--sub-lang',
-      'en.*',
+      'en,en-US,en-GB',
       '--sub-format',
       'vtt',
     ];
 
     const attempts = [];
     attempts.push({
-      label: 'fast-web',
+      label: 'fast-android',
       args: [
         '--extractor-args',
-        'youtube:player_client=web',
+        'youtube:player_client=android',
         ...baseArgs,
         '-o',
-        path.join(dir, 'fast-web-%(id)s.%(ext)s'),
+        path.join(dir, 'fast-android-%(id)s.%(ext)s'),
         cleanUrl,
       ],
     });
@@ -330,7 +330,7 @@ app.get('/api/transcript', async (req, res) => {
       label: 'without-cookies',
       args: [
         '--extractor-args',
-        'youtube:player_client=android,web',
+        'youtube:player_client=web',
         ...baseArgs,
         '-o',
         path.join(dir, 'without-cookies-%(id)s.%(ext)s'),

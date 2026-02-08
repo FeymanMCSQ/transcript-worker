@@ -4,7 +4,7 @@ A small HTTP service that fetches YouTube captions with `yt-dlp`, strips the Web
 
 **What it supports today**
 - YouTube URLs only. Non-YouTube URLs are rejected.
-- English captions (`--sub-lang en.*`).
+- English captions (`--sub-lang en,en-US,en-GB`).
 - Manual and auto-generated captions (`--write-subs --write-auto-subs`).
 - Returns plain text (timestamps and cue indices are removed).
 
@@ -14,7 +14,7 @@ Some videos trigger YouTube anti-bot challenge checks. The worker uses a fast pa
 ## Requirements
 - Node.js (project uses ES modules)
 - `yt-dlp` available on your PATH
-- Deno available on your PATH (used by `yt-dlp --js-runtimes deno,node`)
+- Deno available on your PATH (used by `yt-dlp --js-runtimes deno`)
 - `curl-cffi` capable yt-dlp install (recommended in Docker image)
 - Optional: `YT_COOKIES` environment variable if you need authenticated access to private or age-gated videos
 
@@ -61,10 +61,10 @@ curl "http://localhost:3000/api/transcript?url=https://www.youtube.com/watch?v=d
 2. Creates a temporary directory.
 3. Writes a `cookies.txt` file if `YT_COOKIES` is provided.
 4. Executes yt-dlp attempts in order:
-   - fast path (no cookies): `--extractor-args youtube:player_client=web ...`
+   - fast path (no cookies): `--extractor-args youtube:player_client=android ...`
    - with cookies (if `YT_COOKIES` is provided): `--extractor-args youtube:player_client=web ...`
-   - fallback without cookies: `--extractor-args youtube:player_client=android,web ...`
-   All attempts use: `--impersonate chrome --js-runtimes deno,node --ignore-no-formats-error --no-playlist --skip-download --write-subs --write-auto-subs --sub-lang en.* --sub-format vtt`
+   - fallback without cookies: `--extractor-args youtube:player_client=web ...`
+   All attempts use: `--impersonate chrome --js-runtimes deno --ignore-no-formats-error --no-playlist --skip-download --write-subs --write-auto-subs --sub-lang en,en-US,en-GB --sub-format vtt`
 5. Reads the `.vtt` output, strips timestamps and cue indices, and returns plain text.
 
 ## Configuration
