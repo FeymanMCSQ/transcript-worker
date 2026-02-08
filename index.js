@@ -135,6 +135,42 @@ function isLikelyYoutubeUrl(url) {
   }
 }
 
+function classifyYtDlpText(text) {
+  const msg = (text || '').toLowerCase();
+  return {
+    isRateLimited: msg.includes('http error 429'),
+    isChallengeBlocked:
+      msg.includes('n challenge solving failed') ||
+      msg.includes('only images are available for download') ||
+      msg.includes('requested format is not available') ||
+      msg.includes('sign in to confirm') ||
+      msg.includes('confirm you are not a bot'),
+    isNoCaptions:
+      msg.includes('unable to download video subtitles') ||
+      msg.includes('no subtitles') ||
+      msg.includes('no caption') ||
+      msg.includes('no captions') ||
+      msg.includes('there are no subtitles for the requested languages'),
+  };
+}
+
+function runYtDlp(args) {
+  return new Promise((resolve) => {
+    execFile(
+      'yt-dlp',
+      args,
+      { maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        resolve({
+          err: err || null,
+          stdoutText: (stdout || '').toString(),
+          stderrText: (stderr || '').toString(),
+        });
+      }
+    );
+  });
+}
+
 app.get('/api/transcript', async (req, res) => {
   const rawUrl = req.query.url;
 
@@ -161,6 +197,17 @@ app.get('/api/transcript', async (req, res) => {
   let dir = null;
 
   try {
+    const finish = async (statusCode, payload) => {
+      if (dir) {
+        try {
+          await fs.rm(dir, { recursive: true, force: true });
+        } catch (cleanupErr) {
+          console.error('[worker] Failed to clean temp dir:', cleanupErr);
+        }
+      }
+      return res.status(statusCode).json(payload);
+    };
+
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yt-dlp-'));
 
     const cookiePath = path.join(dir, 'cookies.txt');
@@ -171,12 +218,9 @@ app.get('/api/transcript', async (req, res) => {
       console.log('[worker] Cookies file created.');
     }
 
-    const outputPattern = path.join(dir, '%(id)s.%(ext)s');
-    const args = [
+    const baseArgs = [
       '--js-runtimes',
       'node',
-      '--extractor-args',
-      'youtube:player_client=android,web',
       '--ignore-no-formats-error',
       '--no-playlist',
       '--skip-download',
@@ -186,108 +230,92 @@ app.get('/api/transcript', async (req, res) => {
       'en.*',
       '--sub-format',
       'vtt',
-      '-o',
-      outputPattern,
-      cleanUrl,
     ];
 
+    const attempts = [];
     if (cookieData) {
-      args.unshift(cookiePath);
-      args.unshift('--cookies');
+      attempts.push({
+        label: 'with-cookies',
+        args: [
+          '--cookies',
+          cookiePath,
+          '--extractor-args',
+          'youtube:player_client=web',
+          ...baseArgs,
+          '-o',
+          path.join(dir, 'with-cookies-%(id)s.%(ext)s'),
+          cleanUrl,
+        ],
+      });
     }
 
-    console.log('[worker] Running command:', `yt-dlp ${args.join(' ')}`);
+    attempts.push({
+      label: 'without-cookies',
+      args: [
+        '--extractor-args',
+        'youtube:player_client=android,web',
+        ...baseArgs,
+        '-o',
+        path.join(dir, 'without-cookies-%(id)s.%(ext)s'),
+        cleanUrl,
+      ],
+    });
 
-    execFile('yt-dlp', args, { maxBuffer: 8 * 1024 * 1024 }, async (err, stdout, stderr) => {
-      // helper: always try to clean up temp dir, then send response
-      const finish = async (statusCode, payload) => {
-        if (dir) {
-          try {
-            await fs.rm(dir, { recursive: true, force: true });
-          } catch (cleanupErr) {
-            console.error('[worker] Failed to clean temp dir:', cleanupErr);
-          }
-        }
-        return res.status(statusCode).json(payload);
-      };
+    let sawRateLimit = false;
+    let sawChallenge = false;
+    let sawNoCaptions = false;
+    let sawAnyYtDlpError = false;
+    let sawEmptyTranscript = false;
 
-      const stderrText = (stderr || '').toString();
-      const stdoutText = (stdout || '').toString();
+    for (const attempt of attempts) {
+      console.log(
+        `[worker] Running command (${attempt.label}):`,
+        `yt-dlp ${attempt.args.join(' ')}`
+      );
+
+      const { err, stdoutText, stderrText } = await runYtDlp(attempt.args);
+      const combinedText = `${stderrText}\n${stdoutText}\n${
+        err?.message || ''
+      }`;
+      const outcome = classifyYtDlpText(combinedText);
 
       if (stderrText) {
         console.warn(
-          '[worker] yt-dlp stderr (preview):',
+          `[worker] yt-dlp stderr (${attempt.label}) preview:`,
           stderrText.slice(0, 400)
         );
       }
       if (stdoutText) {
         console.log(
-          '[worker] yt-dlp stdout (preview):',
+          `[worker] yt-dlp stdout (${attempt.label}) preview:`,
           stdoutText.slice(0, 400)
         );
       }
 
+      sawRateLimit = sawRateLimit || outcome.isRateLimited;
+      sawChallenge = sawChallenge || outcome.isChallengeBlocked;
+      sawNoCaptions = sawNoCaptions || outcome.isNoCaptions;
+      sawAnyYtDlpError = sawAnyYtDlpError || Boolean(err);
+
       if (err) {
-        const msg = (stderrText || err.message || '').toLowerCase();
-
-        if (
-          msg.includes('n challenge solving failed') ||
-          msg.includes('only images are available for download') ||
-          msg.includes('requested format is not available') ||
-          msg.includes('sign in to confirm')
-        ) {
-          console.error('[worker] YouTube anti-bot challenge blocked subtitle extraction.');
-          return finish(503, {
-            errorCode: 'YOUTUBE_CHALLENGE',
-            message:
-              'YouTube challenge checks blocked caption extraction for this request. Retry later or refresh yt-dlp/challenge components.',
-          });
-        }
-
-        if (msg.includes('http error 429')) {
-          console.error('[worker] Rate limited by YouTube (429).');
-          return finish(429, {
-            errorCode: 'YOUTUBE_RATE_LIMIT',
-            message:
-              'YouTube is rate-limiting this server (HTTP 429). Try again later or paste the transcript manually.',
-          });
-        }
-
-        if (
-          msg.includes('unable to download video subtitles') ||
-          msg.includes('no subtitles') ||
-          msg.includes('no caption') ||
-          msg.includes('no captions')
-        ) {
-          console.error('[worker] No subtitles available for this video.');
-          return finish(404, {
-            errorCode: 'NO_CAPTIONS',
-            message:
-              'No English captions were found for this video (manual or auto).',
-          });
-        }
-
-        console.error('[worker] yt-dlp failed:', err);
-        return finish(500, {
-          errorCode: 'YTDLP_FAILED',
-          message: 'yt-dlp failed to fetch captions.',
-          details: {
-            exitCode: err && typeof err.code !== 'undefined' ? err.code : null,
-          },
-        });
+        console.warn(
+          `[worker] yt-dlp attempt failed (${attempt.label}) with exit code:`,
+          typeof err.code !== 'undefined' ? err.code : null
+        );
+        continue;
       }
 
-      // Success path: yt-dlp exited cleanly, try to find and parse the vtt
       try {
         const files = await fs.readdir(dir);
-        const vttFile = files.find((f) => f.endsWith('.vtt'));
+        const vttFile = files.find(
+          (f) => f.startsWith(`${attempt.label}-`) && f.endsWith('.vtt')
+        );
 
         if (!vttFile) {
-          console.error('[worker] No .vtt file produced by yt-dlp.');
-          return finish(404, {
-            errorCode: 'NO_VTT_FILE',
-            message: 'No caption (.vtt) file was produced for this video.',
-          });
+          console.warn(
+            `[worker] No .vtt file produced in attempt (${attempt.label}).`
+          );
+          continue;
         }
 
         const fullPath = path.join(dir, vttFile);
@@ -295,12 +323,11 @@ app.get('/api/transcript', async (req, res) => {
         const text = stripVttToPlainText(vtt);
 
         if (!text.trim()) {
-          console.error('[worker] Caption file was empty after stripping.');
-          return finish(502, {
-            errorCode: 'EMPTY_TRANSCRIPT',
-            message:
-              'Captions were fetched but the resulting transcript was empty after processing.',
-          });
+          console.warn(
+            `[worker] Caption file was empty after stripping (${attempt.label}).`
+          );
+          sawEmptyTranscript = true;
+          continue;
         }
 
         console.log(
@@ -327,6 +354,57 @@ app.get('/api/transcript', async (req, res) => {
             'Captions were fetched, but there was a filesystem error while reading the transcript.',
         });
       }
+    }
+
+    if (sawRateLimit) {
+      console.error('[worker] Rate limited by YouTube (429).');
+      return finish(429, {
+        errorCode: 'YOUTUBE_RATE_LIMIT',
+        message:
+          'YouTube is rate-limiting this server (HTTP 429). Try again later or paste the transcript manually.',
+      });
+    }
+
+    if (sawChallenge) {
+      console.error(
+        '[worker] YouTube anti-bot challenge blocked subtitle extraction.'
+      );
+      return finish(503, {
+        errorCode: 'YOUTUBE_CHALLENGE',
+        message:
+          'YouTube challenge checks blocked caption extraction for this request. Retry later, rotate IP, refresh cookies, or update yt-dlp/challenge components.',
+      });
+    }
+
+    if (sawNoCaptions) {
+      console.error('[worker] No subtitles available for this video.');
+      return finish(404, {
+        errorCode: 'NO_CAPTIONS',
+        message:
+          'No English captions were found for this video (manual or auto).',
+      });
+    }
+
+    if (sawEmptyTranscript) {
+      console.error('[worker] Captions were present but empty after stripping.');
+      return finish(502, {
+        errorCode: 'EMPTY_TRANSCRIPT',
+        message:
+          'Captions were fetched but the resulting transcript was empty after processing.',
+      });
+    }
+
+    if (sawAnyYtDlpError) {
+      return finish(500, {
+        errorCode: 'YTDLP_FAILED',
+        message: 'yt-dlp failed to fetch captions after all retries.',
+      });
+    }
+
+    console.error('[worker] No .vtt file produced by yt-dlp in any attempt.');
+    return finish(404, {
+      errorCode: 'NO_VTT_FILE',
+      message: 'No caption (.vtt) file was produced for this video.',
     });
   } catch (outerErr) {
     console.error('[worker] Fatal error before running yt-dlp:', outerErr);
