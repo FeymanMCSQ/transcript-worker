@@ -223,6 +223,7 @@ app.get('/api/transcript', async (req, res) => {
       'node',
       '--ignore-no-formats-error',
       '--no-playlist',
+      '--subs-only',
       '--skip-download',
       '--write-subs',
       '--write-auto-subs',
@@ -233,6 +234,18 @@ app.get('/api/transcript', async (req, res) => {
     ];
 
     const attempts = [];
+    attempts.push({
+      label: 'fast-web',
+      args: [
+        '--extractor-args',
+        'youtube:player_client=web',
+        ...baseArgs,
+        '-o',
+        path.join(dir, 'fast-web-%(id)s.%(ext)s'),
+        cleanUrl,
+      ],
+    });
+
     if (cookieData) {
       attempts.push({
         label: 'with-cookies',

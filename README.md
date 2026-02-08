@@ -9,7 +9,7 @@ A small HTTP service that fetches YouTube captions with `yt-dlp`, strips the Web
 - Returns plain text (timestamps and cue indices are removed).
 
 **Important**
-Some videos trigger YouTube anti-bot challenge checks. The worker retries with two extraction strategies (with cookies, then without cookies) and returns `YOUTUBE_CHALLENGE` when extraction is still blocked upstream.
+Some videos trigger YouTube anti-bot challenge checks. The worker uses a fast path first, then retries with additional strategies, and returns `YOUTUBE_CHALLENGE` when extraction is still blocked upstream.
 
 ## Requirements
 - Node.js (project uses ES modules)
@@ -59,9 +59,10 @@ curl "http://localhost:3000/api/transcript?url=https://www.youtube.com/watch?v=d
 2. Creates a temporary directory.
 3. Writes a `cookies.txt` file if `YT_COOKIES` is provided.
 4. Executes yt-dlp attempts in order:
+   - fast path (no cookies): `--extractor-args youtube:player_client=web ...`
    - with cookies (if `YT_COOKIES` is provided): `--extractor-args youtube:player_client=web ...`
    - fallback without cookies: `--extractor-args youtube:player_client=android,web ...`
-   Both attempts use: `--ignore-no-formats-error --no-playlist --skip-download --write-subs --write-auto-subs --sub-lang en.* --sub-format vtt`
+   All attempts use: `--ignore-no-formats-error --no-playlist --subs-only --skip-download --write-subs --write-auto-subs --sub-lang en.* --sub-format vtt`
 5. Reads the `.vtt` output, strips timestamps and cue indices, and returns plain text.
 
 ## Configuration
