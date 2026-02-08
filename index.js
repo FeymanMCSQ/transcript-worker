@@ -135,6 +135,69 @@ function isLikelyYoutubeUrl(url) {
   }
 }
 
+function normalizeCookieEnv(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let text = raw.trim();
+
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1);
+  }
+
+  text = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+
+  const out = [];
+  const lines = text.split('\n');
+  let sawHeader = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed.startsWith('#')) {
+      if (trimmed.toLowerCase().includes('netscape http cookie file')) {
+        sawHeader = true;
+      }
+      out.push(trimmed);
+      continue;
+    }
+
+    if (line.includes('\t')) {
+      out.push(line.trim());
+      continue;
+    }
+
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 7) {
+      const row = [
+        parts[0],
+        parts[1],
+        parts[2],
+        parts[3],
+        parts[4],
+        parts[5],
+        parts.slice(6).join(' '),
+      ].join('\t');
+      out.push(row);
+      continue;
+    }
+
+    out.push(trimmed);
+  }
+
+  if (!sawHeader) {
+    out.unshift('# Netscape HTTP Cookie File');
+  }
+
+  return `${out.join('\n')}\n`;
+}
+
 function classifyYtDlpText(text) {
   const msg = (text || '').toLowerCase();
   return {
@@ -211,7 +274,7 @@ app.get('/api/transcript', async (req, res) => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yt-dlp-'));
 
     const cookiePath = path.join(dir, 'cookies.txt');
-    const cookieData = process.env.YT_COOKIES || '';
+    const cookieData = normalizeCookieEnv(process.env.YT_COOKIES || '');
 
     if (cookieData) {
       await fs.writeFile(cookiePath, cookieData, 'utf8');
@@ -219,8 +282,10 @@ app.get('/api/transcript', async (req, res) => {
     }
 
     const baseArgs = [
+      '--impersonate',
+      'chrome',
       '--js-runtimes',
-      'node',
+      'deno,node',
       '--ignore-no-formats-error',
       '--no-playlist',
       '--skip-download',

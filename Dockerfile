@@ -1,19 +1,22 @@
-FROM node:18-slim
+FROM node:22-slim
 
-# Install system deps: CA certs, curl, ffmpeg, python3
+# Install system deps: CA certs, curl, ffmpeg, python3, pip
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        ca-certificates \
        curl \
        ffmpeg \
        python3 \
+       python3-pip \
   && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp from the official release binary
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-        -o /usr/local/bin/yt-dlp \
-  && chmod a+rx /usr/local/bin/yt-dlp
+# Install yt-dlp with curl-cffi extras
+RUN pip3 install --no-cache-dir "yt-dlp[default,curl-cffi]"
+
+# Install Deno >=2.0 for yt-dlp JS challenge solving
+RUN curl -fsSL https://deno.land/install.sh | sh \
+  && ln -s /root/.deno/bin/deno /usr/local/bin/deno
 
 WORKDIR /app
 
