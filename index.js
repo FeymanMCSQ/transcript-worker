@@ -223,7 +223,6 @@ app.get('/api/transcript', async (req, res) => {
       'node',
       '--ignore-no-formats-error',
       '--no-playlist',
-      '--subs-only',
       '--skip-download',
       '--write-subs',
       '--write-auto-subs',

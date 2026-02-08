@@ -62,7 +62,7 @@ curl "http://localhost:3000/api/transcript?url=https://www.youtube.com/watch?v=d
    - fast path (no cookies): `--extractor-args youtube:player_client=web ...`
    - with cookies (if `YT_COOKIES` is provided): `--extractor-args youtube:player_client=web ...`
    - fallback without cookies: `--extractor-args youtube:player_client=android,web ...`
-   All attempts use: `--ignore-no-formats-error --no-playlist --subs-only --skip-download --write-subs --write-auto-subs --sub-lang en.* --sub-format vtt`
+   All attempts use: `--ignore-no-formats-error --no-playlist --skip-download --write-subs --write-auto-subs --sub-lang en.* --sub-format vtt`
 5. Reads the `.vtt` output, strips timestamps and cue indices, and returns plain text.
 
 ## Configuration
