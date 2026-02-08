@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Install system deps: CA certs, curl, ffmpeg, python3, pip, venv
+# Install system deps: CA certs, curl, ffmpeg, python3, pip, venv, unzip
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        ca-certificates \
@@ -9,6 +9,7 @@ RUN apt-get update \
        python3 \
        python3-pip \
        python3-venv \
+       unzip \
   && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
