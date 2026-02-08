@@ -38,6 +38,7 @@ Error responses:
 - `404` `NO_VTT_FILE` no `.vtt` file was produced.
 - `429` `YOUTUBE_RATE_LIMIT` upstream throttle.
 - `503` `YOUTUBE_CHALLENGE` challenge/anti-bot block detected.
+- `503` `YOUTUBE_PO_TOKEN_REQUIRED` YouTube withheld subtitle tracks unless a PO token is provided.
 - `500` `WORKER_SETUP_FAILED` temp workspace prep failed.
 - `500` `YTDLP_FAILED` yt-dlp failed after all attempts.
 - `500` `FS_ERROR` subtitle file read/parsing filesystem error.
@@ -74,8 +75,8 @@ The current approach combines runtime parity, request-shape tuning, and clean re
 - auto-adds Netscape cookie header when missing.
 
 6. Controlled retries:
-- fast attempt with `android` client.
-- cookie-authenticated `web` attempt when cookies are present.
+- fast attempt with `tv` client.
+- cookie-authenticated `tv` attempt when cookies are present.
 - final anonymous `web` attempt.
 
 7. Strict success rule:
@@ -87,8 +88,8 @@ The current approach combines runtime parity, request-shape tuning, and clean re
 2. Create temp working directory in `/tmp`.
 3. Normalize `YT_COOKIES` and write `cookies.txt` if present.
 4. Execute yt-dlp attempts in order:
-- `fast-android` uses `--extractor-args youtube:player_client=android`
-- `with-cookies` uses `--cookies <file> --extractor-args youtube:player_client=web`
+- `fast-tv` uses `--extractor-args youtube:player_client=tv`
+- `with-cookies-tv` uses `--cookies <file> --extractor-args youtube:player_client=tv`
 - `without-cookies` uses `--extractor-args youtube:player_client=web`
 5. For each successful attempt, find matching `.vtt`, parse it to plain text, return transcript.
 6. If all attempts fail, classify and return the most actionable error code.
@@ -109,11 +110,11 @@ Base args used in every attempt:
 
 Attempt-specific shape:
 ```bash
-# fast-android
-yt-dlp --extractor-args youtube:player_client=android <base-args> -o "/tmp/<session>/fast-android-%(id)s.%(ext)s" "<url>"
+# fast-tv
+yt-dlp --extractor-args youtube:player_client=tv <base-args> -o "/tmp/<session>/fast-tv-%(id)s.%(ext)s" "<url>"
 
-# with-cookies (only if YT_COOKIES is present)
-yt-dlp --cookies "/tmp/<session>/cookies.txt" --extractor-args youtube:player_client=web <base-args> -o "/tmp/<session>/with-cookies-%(id)s.%(ext)s" "<url>"
+# with-cookies-tv (only if YT_COOKIES is present)
+yt-dlp --cookies "/tmp/<session>/cookies.txt" --extractor-args youtube:player_client=tv <base-args> -o "/tmp/<session>/with-cookies-tv-%(id)s.%(ext)s" "<url>"
 
 # without-cookies fallback
 yt-dlp --extractor-args youtube:player_client=web <base-args> -o "/tmp/<session>/without-cookies-%(id)s.%(ext)s" "<url>"

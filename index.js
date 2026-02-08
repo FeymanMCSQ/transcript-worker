@@ -202,6 +202,10 @@ function classifyYtDlpText(text) {
   const msg = (text || '').toLowerCase();
   return {
     isRateLimited: msg.includes('http error 429'),
+    isPoTokenRequired:
+      msg.includes('po token was not provided') ||
+      msg.includes('requires a gvs po token') ||
+      msg.includes('missing subtitles languages because a po token'),
     isChallengeBlocked:
       msg.includes('n challenge solving failed') ||
       msg.includes('only images are available for download') ||
@@ -299,28 +303,28 @@ app.get('/api/transcript', async (req, res) => {
 
     const attempts = [];
     attempts.push({
-      label: 'fast-android',
+      label: 'fast-tv',
       args: [
         '--extractor-args',
-        'youtube:player_client=android',
+        'youtube:player_client=tv',
         ...baseArgs,
         '-o',
-        path.join(dir, 'fast-android-%(id)s.%(ext)s'),
+        path.join(dir, 'fast-tv-%(id)s.%(ext)s'),
         cleanUrl,
       ],
     });
 
     if (cookieData) {
       attempts.push({
-        label: 'with-cookies',
+        label: 'with-cookies-tv',
         args: [
           '--cookies',
           cookiePath,
           '--extractor-args',
-          'youtube:player_client=web',
+          'youtube:player_client=tv',
           ...baseArgs,
           '-o',
-          path.join(dir, 'with-cookies-%(id)s.%(ext)s'),
+          path.join(dir, 'with-cookies-tv-%(id)s.%(ext)s'),
           cleanUrl,
         ],
       });
@@ -339,6 +343,7 @@ app.get('/api/transcript', async (req, res) => {
     });
 
     let sawRateLimit = false;
+    let sawPoTokenRequired = false;
     let sawChallenge = false;
     let sawNoCaptions = false;
     let sawAnyYtDlpError = false;
@@ -370,6 +375,7 @@ app.get('/api/transcript', async (req, res) => {
       }
 
       sawRateLimit = sawRateLimit || outcome.isRateLimited;
+      sawPoTokenRequired = sawPoTokenRequired || outcome.isPoTokenRequired;
       sawChallenge = sawChallenge || outcome.isChallengeBlocked;
       sawNoCaptions = sawNoCaptions || outcome.isNoCaptions;
       sawAnyYtDlpError = sawAnyYtDlpError || Boolean(err);
@@ -433,15 +439,6 @@ app.get('/api/transcript', async (req, res) => {
       }
     }
 
-    if (sawRateLimit) {
-      console.error('[worker] Rate limited by YouTube (429).');
-      return finish(429, {
-        errorCode: 'YOUTUBE_RATE_LIMIT',
-        message:
-          'YouTube is rate-limiting this server (HTTP 429). Try again later or paste the transcript manually.',
-      });
-    }
-
     if (sawChallenge) {
       console.error(
         '[worker] YouTube anti-bot challenge blocked subtitle extraction.'
@@ -450,6 +447,24 @@ app.get('/api/transcript', async (req, res) => {
         errorCode: 'YOUTUBE_CHALLENGE',
         message:
           'YouTube challenge checks blocked caption extraction for this request. Retry later, rotate IP, refresh cookies, or update yt-dlp/challenge components.',
+      });
+    }
+
+    if (sawPoTokenRequired) {
+      console.error('[worker] YouTube requires PO token for subtitle availability.');
+      return finish(503, {
+        errorCode: 'YOUTUBE_PO_TOKEN_REQUIRED',
+        message:
+          'YouTube withheld subtitles for the selected client because a PO token was not provided.',
+      });
+    }
+
+    if (sawRateLimit) {
+      console.error('[worker] Rate limited by YouTube (429).');
+      return finish(429, {
+        errorCode: 'YOUTUBE_RATE_LIMIT',
+        message:
+          'YouTube is rate-limiting this server (HTTP 429). Try again later or paste the transcript manually.',
       });
     }
 
