@@ -1,36 +1,28 @@
 # transcript-worker
 
-A small HTTP service that fetches YouTube captions with `yt-dlp`, strips the WebVTT formatting, and returns plain text.
+Production-oriented YouTube transcript worker built on `yt-dlp`.
 
-**What it supports today**
-- YouTube URLs only. Non-YouTube URLs are rejected.
-- English captions (`--sub-lang en,en-US,en-GB`).
-- Manual and auto-generated captions (`--write-subs --write-auto-subs`).
-- Returns plain text (timestamps and cue indices are removed).
+The service fetches subtitles, parses WebVTT to plain text, and returns transcript JSON.
 
-**Important**
-Some videos trigger YouTube anti-bot challenge checks. The worker uses a fast path first, then retries with additional strategies, and returns `YOUTUBE_CHALLENGE` when extraction is still blocked upstream.
+This document explains how this repo was hardened so subtitle extraction keeps working under modern YouTube anti-abuse behavior.
 
-## Requirements
-- Node.js (project uses ES modules)
-- `yt-dlp` available on your PATH
-- Deno available on your PATH (used by `yt-dlp --js-runtimes deno`)
-- `curl-cffi` capable yt-dlp install (recommended in Docker image)
-- Optional: `YT_COOKIES` environment variable if you need authenticated access to private or age-gated videos
+Important: this is a reliability strategy, not a bypass guarantee. YouTube behavior changes over time.
 
-## Run locally
-1. Install dependencies with `npm install`.
-2. Start the server with `npm start`.
-3. The server listens on `http://localhost:3000` unless `PORT` is set.
+## What This Worker Supports
+- YouTube URLs only.
+- English subtitle preference list: `en,en-US,en-GB`.
+- Manual and auto subtitles: `--write-subs --write-auto-subs`.
+- Plain text output (timestamps and cue metadata removed).
+- Multi-attempt extraction strategy with explicit error classification.
 
 ## API
 ### `GET /api/transcript?url=...`
-Fetches the transcript for a single YouTube video.
+Fetch a transcript for one YouTube video.
 
-**Query parameters**
-- `url` (required): YouTube URL (e.g. `https://www.youtube.com/watch?v=VIDEO_ID` or `https://youtu.be/VIDEO_ID`).
+Query parameter:
+- `url` required. Example: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`
 
-**Success response** (`200`)
+Success response (`200`):
 ```json
 {
   "errorCode": null,
@@ -39,51 +31,160 @@ Fetches the transcript for a single YouTube video.
 }
 ```
 
-**Error responses**
-- `400` `MISSING_URL`: `url` query parameter missing or empty
-- `400` `INVALID_URL`: URL is not recognized as a YouTube URL
-- `404` `NO_CAPTIONS`: No English captions found (manual or auto)
-- `404` `NO_VTT_FILE`: `yt-dlp` succeeded but no `.vtt` file was produced
-- `429` `YOUTUBE_RATE_LIMIT`: YouTube returned HTTP 429
-- `503` `YOUTUBE_CHALLENGE`: YouTube challenge checks blocked caption extraction
-- `500` `WORKER_SETUP_FAILED`: Failed to create temp workspace
-- `500` `YTDLP_FAILED`: `yt-dlp` exited with an error
-- `500` `FS_ERROR`: Failed reading the generated caption file
-- `502` `EMPTY_TRANSCRIPT`: Captions existed but stripped transcript was empty
+Error responses:
+- `400` `MISSING_URL` missing or empty `url`.
+- `400` `INVALID_URL` URL is not recognized as YouTube.
+- `404` `NO_CAPTIONS` no English subtitles found.
+- `404` `NO_VTT_FILE` no `.vtt` file was produced.
+- `429` `YOUTUBE_RATE_LIMIT` upstream throttle.
+- `503` `YOUTUBE_CHALLENGE` challenge/anti-bot block detected.
+- `500` `WORKER_SETUP_FAILED` temp workspace prep failed.
+- `500` `YTDLP_FAILED` yt-dlp failed after all attempts.
+- `500` `FS_ERROR` subtitle file read/parsing filesystem error.
+- `502` `EMPTY_TRANSCRIPT` VTT existed but stripped text was empty.
 
-**Example request**
+Example:
 ```bash
 curl "http://localhost:3000/api/transcript?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
-## How it works
-1. Validates the URL and normalizes it to `https://www.youtube.com/watch?v=VIDEO_ID`.
-2. Creates a temporary directory.
-3. Writes a `cookies.txt` file if `YT_COOKIES` is provided.
-4. Executes yt-dlp attempts in order:
-   - fast path (no cookies): `--extractor-args youtube:player_client=android ...`
-   - with cookies (if `YT_COOKIES` is provided): `--extractor-args youtube:player_client=web ...`
-   - fallback without cookies: `--extractor-args youtube:player_client=web ...`
-   All attempts use: `--impersonate chrome --js-runtimes deno --ignore-no-formats-error --no-playlist --skip-download --write-subs --write-auto-subs --sub-lang en,en-US,en-GB --sub-format vtt`
-5. Reads the `.vtt` output, strips timestamps and cue indices, and returns plain text.
+## How We Made yt-dlp Reliable Here
+The current approach combines runtime parity, request-shape tuning, and clean retries.
+
+1. Runtime parity:
+- `yt-dlp` installed with `curl-cffi` extras.
+- Deno installed and available for JS challenge solving.
+- Node 22 base image.
+
+2. Browser-like network profile:
+- `--impersonate chrome`.
+- `--js-runtimes deno`.
+
+3. Subtitle-only extraction intent:
+- `--skip-download`.
+- `--write-subs --write-auto-subs`.
+- explicit subtitle format: `--sub-format vtt`.
+
+4. Reduced request noise:
+- explicit language list (`en,en-US,en-GB`) instead of broad wildcard patterns.
+
+5. Cookie robustness:
+- env cookie blob is normalized before writing file.
+- supports escaped newlines/tabs from deployment env UIs.
+- auto-adds Netscape cookie header when missing.
+
+6. Controlled retries:
+- fast attempt with `android` client.
+- cookie-authenticated `web` attempt when cookies are present.
+- final anonymous `web` attempt.
+
+7. Strict success rule:
+- no partial-success acceptance.
+- attempt must exit cleanly and produce a readable `.vtt`.
+
+## End-to-End Request Flow
+1. Validate and normalize input URL to canonical `watch?v=...`.
+2. Create temp working directory in `/tmp`.
+3. Normalize `YT_COOKIES` and write `cookies.txt` if present.
+4. Execute yt-dlp attempts in order:
+- `fast-android` uses `--extractor-args youtube:player_client=android`
+- `with-cookies` uses `--cookies <file> --extractor-args youtube:player_client=web`
+- `without-cookies` uses `--extractor-args youtube:player_client=web`
+5. For each successful attempt, find matching `.vtt`, parse it to plain text, return transcript.
+6. If all attempts fail, classify and return the most actionable error code.
+
+## Exact Command Profile
+Base args used in every attempt:
+```bash
+--impersonate chrome
+--js-runtimes deno
+--ignore-no-formats-error
+--no-playlist
+--skip-download
+--write-subs
+--write-auto-subs
+--sub-lang en,en-US,en-GB
+--sub-format vtt
+```
+
+Attempt-specific shape:
+```bash
+# fast-android
+yt-dlp --extractor-args youtube:player_client=android <base-args> -o "/tmp/<session>/fast-android-%(id)s.%(ext)s" "<url>"
+
+# with-cookies (only if YT_COOKIES is present)
+yt-dlp --cookies "/tmp/<session>/cookies.txt" --extractor-args youtube:player_client=web <base-args> -o "/tmp/<session>/with-cookies-%(id)s.%(ext)s" "<url>"
+
+# without-cookies fallback
+yt-dlp --extractor-args youtube:player_client=web <base-args> -o "/tmp/<session>/without-cookies-%(id)s.%(ext)s" "<url>"
+```
+
+## Cookie Normalization Behavior
+The worker normalizes `YT_COOKIES` before writing `cookies.txt`:
+- trims outer single/double quotes.
+- converts `\r\n` and `\r` to `\n`.
+- converts escaped `\\n` and `\\t`.
+- reconstructs cookie rows into tab-delimited Netscape format when possible.
+- ensures `# Netscape HTTP Cookie File` header exists.
+- appends trailing newline for consistent parser behavior.
+
+Why this matters:
+- deployment dashboards often mangle multiline secrets.
+- malformed cookie rows silently degrade extraction quality.
+
+## Docker and Runtime Requirements
+`Dockerfile` currently installs:
+- `node:22-slim`
+- `python3`, `python3-pip`, `python3-venv`
+- `ffmpeg`, `curl`, `unzip`
+- `yt-dlp[default,curl-cffi]` inside `/opt/yt-dlp-venv`
+- Deno installed and linked into `/usr/local/bin/deno`
+
+Notes:
+- venv install is required to avoid PEP 668 `externally-managed-environment` errors on Debian.
+- `unzip` is required by Deno installer script.
+
+## Operations Checklist
+1. Build and deploy image without stale cache when changing yt-dlp runtime.
+2. Confirm logs show `Solving JS challenges using deno`.
+3. Confirm no `Ignoring unsupported JavaScript runtime(s)` warnings.
+4. Test with one known-caption video.
+5. Test with your target video.
+6. Validate returned `errorCode` on failures and tune by observed mode.
+
+## Fast Triage Guide
+If logs show `n challenge solving failed`:
+- confirm Deno is installed and on PATH in container.
+- confirm yt-dlp build includes curl-cffi extras.
+
+If logs show `There are no subtitles for the requested languages`:
+- verify subtitle language list and video subtitle availability for account/session context.
+
+If logs show `Rate limited by YouTube (429)`:
+- reduce request frequency.
+- avoid repeated immediate retries on same video.
+- test from a different egress/IP profile if infrastructure permits.
+
+If logs show cookie warnings:
+- refresh cookies from active browser session.
+- verify env formatting for multiline secret storage.
+
+## Security Notes
+- Treat `YT_COOKIES` as credential material.
+- Never print raw cookie content to logs.
+- Temp cookie file is request-scoped and removed during cleanup.
+- Rotate cookies immediately if leaked.
 
 ## Configuration
-- `PORT`: Port to bind the HTTP server (default `3000`).
-- `YT_COOKIES`: Raw cookies text to pass to `yt-dlp` for authenticated requests. The worker writes it to a temporary `cookies.txt` file.
+- `PORT` default `3000`.
+- `YT_COOKIES` optional raw Netscape cookie content.
 
 ## Limitations
-- English only.
 - YouTube only.
-- No timestamps in the output, just plain text.
-- Subject to YouTube rate limiting (HTTP 429).
+- English-focused subtitle extraction.
+- Transcript only, no timestamps in output.
+- Subject to YouTube challenge/rate-limit behavior.
 
-## Notes on changing caption behavior
-If you want to support manual captions and/or additional languages, update the `yt-dlp` command in `index.js`.
-Common options:
-- `--write-subs` to request manual captions
-- `--write-auto-subs` to request auto captions
-- `--sub-lang en,es` to request multiple languages
-- `--sub-format vtt` to keep WebVTT
-
-## File reference
-- Server entrypoint: `index.js`
+## File Reference
+- Entrypoint: `index.js`
+- Runtime image: `Dockerfile`
