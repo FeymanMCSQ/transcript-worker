@@ -71,7 +71,7 @@
 
 import express from 'express';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -172,12 +172,33 @@ app.get('/api/transcript', async (req, res) => {
     }
 
     const outputPattern = path.join(dir, '%(id)s.%(ext)s');
-    const cookieArg = cookieData ? `--cookies "${cookiePath}"` : '';
-    const cmd = `yt-dlp ${cookieArg} --js-runtimes node --no-playlist --skip-download --write-auto-subs --sub-lang en --sub-format vtt -o "${outputPattern}" "${cleanUrl}"`;
+    const args = [
+      '--js-runtimes',
+      'node',
+      '--extractor-args',
+      'youtube:player_client=android,web',
+      '--ignore-no-formats-error',
+      '--no-playlist',
+      '--skip-download',
+      '--write-subs',
+      '--write-auto-subs',
+      '--sub-lang',
+      'en.*',
+      '--sub-format',
+      'vtt',
+      '-o',
+      outputPattern,
+      cleanUrl,
+    ];
 
-    console.log('[worker] Running command:', cmd);
+    if (cookieData) {
+      args.unshift(cookiePath);
+      args.unshift('--cookies');
+    }
 
-    exec(cmd, async (err, stdout, stderr) => {
+    console.log('[worker] Running command:', `yt-dlp ${args.join(' ')}`);
+
+    execFile('yt-dlp', args, { maxBuffer: 8 * 1024 * 1024 }, async (err, stdout, stderr) => {
       // helper: always try to clean up temp dir, then send response
       const finish = async (statusCode, payload) => {
         if (dir) {
@@ -208,6 +229,20 @@ app.get('/api/transcript', async (req, res) => {
 
       if (err) {
         const msg = (stderrText || err.message || '').toLowerCase();
+
+        if (
+          msg.includes('n challenge solving failed') ||
+          msg.includes('only images are available for download') ||
+          msg.includes('requested format is not available') ||
+          msg.includes('sign in to confirm')
+        ) {
+          console.error('[worker] YouTube anti-bot challenge blocked subtitle extraction.');
+          return finish(503, {
+            errorCode: 'YOUTUBE_CHALLENGE',
+            message:
+              'YouTube challenge checks blocked caption extraction for this request. Retry later or refresh yt-dlp/challenge components.',
+          });
+        }
 
         if (msg.includes('http error 429')) {
           console.error('[worker] Rate limited by YouTube (429).');
